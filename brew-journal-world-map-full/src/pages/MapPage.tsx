@@ -1,7 +1,0 @@
-import { useMemo, useState } from 'react'
-import WorldMap from '../components/map/WorldMap'
-import CountryDrawer from '../components/map/CountryDrawer'
-import { useStore } from '../store/store'
-export default function MapPage(){ const beans=useStore(s=>s.beans); const [country,setCountry]=useState<string|null>(null)
-  const stats=useMemo(()=>{ const tried=beans.filter(b=>b.tried); const by:Record<string,{c:number,sum:number,n:number}>={}; for(const b of tried){ by[b.originCountry]=by[b.originCountry]||{c:0,sum:0,n:0}; by[b.originCountry].c++; if(b.cuppingScore){by[b.originCountry].sum+=b.cuppingScore;by[b.originCountry].n++} } const ent=Object.entries(by); const total=ent.length; const top=ent.sort((a,b)=>b[1].c-a[1].c)[0]?.[0]??'—'; const hi=ent.map(([k,v])=>[k,v.n?Math.round(v.sum/v.n):0] as const).sort((a,b)=>b[1]-a[1])[0]; return {total,top,hi} },[beans])
-  return (<div className="space-y-4"><h1 className="text-xl font-semibold">World Map</h1><div className="flex gap-2 text-sm"><span className="badge">Countries Tried: {stats.total}</span><span className="badge">Top Origin: {stats.top}</span><span className="badge">Highest Avg Score: {stats.hi?stats.hi[0]+' ('+stats.hi[1]+')':'—'}</span></div><div className="card"><WorldMap onSelect={(iso3)=>setCountry(iso3)} /></div><CountryDrawer iso3={country} onClose={()=>setCountry(null)} /></div>) }

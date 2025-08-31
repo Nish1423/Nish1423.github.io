@@ -1,2 +1,0 @@
-export const ISO3_TO_NAME:Record<string,string>={ETH:'Ethiopia',KEN:'Kenya',COL:'Colombia',BRA:'Brazil',GTM:'Guatemala',PAN:'Panama',JPN:'Japan',USA:'United States'}
-export function nameFromISO3(c:string){return ISO3_TO_NAME[c?.toUpperCase()]??c?.toUpperCase()??'Unknown'}
