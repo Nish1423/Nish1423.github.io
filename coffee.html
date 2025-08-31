@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Brew Journal + World Map</title>
+  <!-- Tailwind (runtime CDN) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { --bg:#0b0f19; --fg:#e5e7eb; }
+    body{ background:var(--bg); color:var(--fg); }
+    .btn{ @apply inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-sm; }
+    .input{ @apply bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 w-full; }
+    .card{ @apply bg-neutral-900/70 border border-neutral-800 rounded-2xl p-4 shadow; }
+    .badge{ @apply text-xs rounded-full px-2 py-1 bg-neutral-800 border border-neutral-700; }
+    .link{ color:#93c5fd; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="module">
+    /********************
+     * Imports (ESM CDN)
+     ********************/
+    import React, {useEffect,useMemo,useRef,useState} from "https://esm.sh/react@18";
+    import {createRoot} from "https://esm.sh/react-dom@18/client";
+    import {
+      HashRouter, Routes, Route, Link, NavLink, useNavigate, useParams, useLocation
+    } from "https://esm.sh/react-router-dom@6";
+    import create from "https://esm.sh/zustand@4";
+    import {useForm} from "https://esm.sh/react-hook-form@7";
+    import {z} from "https://esm.sh/zod@3";
+    import {zodResolver} from "https://esm.sh/@hookform/resolvers@3/zod";
+    import {nanoid} from "https://esm.sh/nanoid@4";
+    import {
+      ComposableMap, Geographies, Geography
+    } from "https://esm.sh/react-simple-maps@3?deps=d3-geo,topojson-client,react@18,react-dom@18";
+    import {
+      PDFDownloadLink, Document, Page, Text, View, StyleSheet, pdf as createPdf
+    } from "https://esm.sh/@react-pdf/renderer@3?bundle";
+    import {
+      LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
+    } from "https://esm.sh/recharts@2?deps=react@18,react-dom@18";
+
+    /********************
+     * Utilities & Types
+     ********************/
+    const ISO3_TO_NAME = { ETH:'Ethiopia', KEN:'Kenya', COL:'Colombia', BRA:'Brazil', GTM:'Guatemala', PAN:'Panama', USA:'United States', JPN:'Japan' };
+    const nameFromISO3 = c => ISO3_TO_NAME[c?.toUpperCase()] ?? (c?.toUpperCase()||"Unknown");
+
+    // Zod schemas
+    const BeanSchema = z.object({
+      id: z.string(),
+      name: z.string().min(1),
+      roaster: z.string().optional(),
+      originCountry: z.string().length(3),
+      originRegion: z.string().optional(),
+      farm: z.string().optional(),
+      variety: z.array(z.string()).default([]),
+      process: z.string().optional(),
+      altitudeM: z.number().int().nonnegative().optional(),
+      roastLevel: z.enum(['light','medium','dark']).optional(),
+      roastDate: z.string().optional(),
+      purchaseDate: z.string().optional(),
+      priceJPY: z.number().nonnegative().optional(),
+      tastingNotes: z.array(z.string()).default([]),
+      cuppingScore: z.number().min(0).max(100).optional(),
+      labelPhoto: z.string().optional(),
+      tried: z.boolean().default(false),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+    });
+
+    const BrewSchema = z.object({
+      id: z.string(),
+      beanId: z.string(),
+      date: z.string(),
+      method: z.string(),
+      doseG: z.number(),
+      waterG: z.number(),
+      ratio: z.string().optional(),
+      tempC: z.number().optional(),
+      grindNote: z.string().optional(),
+      timeSec: z.number().optional(),
+      steps: z.array(z.string()).default([]),
+      tds: z.number().optional(),
+      extractionYield: z.number().optional(),
+      rating: z.number().min(1).max(5).optional(),
+      notes: z.string().optional(),
+      attachments: z.array(z.string()).optional(),
+    });
+
+    /********************
+     * DataService (localStorage + migrations)
+     ********************/
+    const STORAGE_KEY = "bjwm_v1";
+    const defaultDB = { version:1, beans:[], brews:[] };
+
+    const DataService = {
+      load(){
+        try{
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if(!raw) return structuredClone(defaultDB);
+          const db = JSON.parse(raw);
+          // migrations (future-ready)
+          if(!db.version) db.version = 1;
+          if(!Array.isArray(db.beans)) db.beans = [];
+          if(!Array.isArray(db.brews)) db.brews = [];
+          return db;
+        }catch(e){ console.warn("load error", e); return structuredClone(defaultDB); }
+      },
+      save(db){
+        try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }
+        catch(e){ console.warn("save error", e); }
+      },
+      export(db){
+        return JSON.stringify(db, null, 2);
+      },
+      import(json){
+        try{
+          const db = JSON.parse(json);
+          if(!db.beans || !db.brews) throw new Error("Invalid JSON");
+          this.save({version:1, beans:db.beans, brews:db.brews});
+          return true;
+        }catch(e){ console.warn("import error",e); return false; }
+      },
+      reset(){ try{ localStorage.removeItem(STORAGE_KEY);}catch{} }
+    };
+
+    /********************
+     * Store (Zustand)
+     ********************/
+    const useStore = create((set,get)=>({
+      beans: [], brews: [],
+      addBean: (b) => {
+        const bean = { ...b, id:nanoid(), createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() };
+        set(s=>({beans:[bean, ...s.beans]})); persist(); return bean;
+      },
+      updateBean: (id, patch) => { set(s=>({beans:s.beans.map(b=>b.id===id?{...b, ...patch, updatedAt:new Date().toISOString()}:b)})); persist(); },
+      deleteBean: (id) => { set(s=>({beans:s.beans.filter(b=>b.id!==id), brews:s.brews.filter(br=>br.beanId!==id)})); persist(); },
+      addBrew: (x) => { const brew = { ...x, id:nanoid() }; set(s=>({brews:[brew, ...s.brews]})); persist(); return brew; },
+      updateBrew: (id, patch) => { set(s=>({brews:s.brews.map(b=>b.id===id?{...b,...patch}:b)})); persist(); },
+      deleteBrew: (id) => { set(s=>({brews:s.brews.filter(b=>b.id!==id)})); persist(); },
+      importJSON: (data) => { set({beans:data.beans??[], brews:data.brews??[]}); persist(); },
+      exportJSON: () => DataService.export({version:1, beans:get().beans, brews:get().brews}),
+      seedIfEmpty: () => {
+        const s = get(); if(s.beans.length || s.brews.length) return;
+        const now = new Date().toISOString();
+        const seeds = [
+          { id:nanoid(), name:"Yirgacheffe Washed", roaster:"Tokyo Roasters", originCountry:"ETH", originRegion:"Yirgacheffe", farm:"Various", variety:["Heirloom"], process:"Washed", altitudeM:2000, roastLevel:"light", roastDate:now, purchaseDate:now, priceJPY:1800, tastingNotes:["jasmine","citrus"], cuppingScore:88, labelPhoto:undefined, tried:true, createdAt:now, updatedAt:now },
+          { id:nanoid(), name:"Nyeri AA", roaster:"Osaka Beans", originCountry:"KEN", originRegion:"Nyeri", variety:["SL28","SL34"], process:"Washed", roastLevel:"light", roastDate:now, purchaseDate:now, priceJPY:2000, tastingNotes:["blackcurrant","grapefruit"], cuppingScore:90, tried:true, createdAt:now, updatedAt:now },
+          { id:nanoid(), name:"Huila Pink Bourbon", roaster:"Kanto Coffee", originCountry:"COL", originRegion:"Huila", variety:["Pink Bourbon"], process:"Washed", roastLevel:"light", roastDate:now, purchaseDate:now, priceJPY:2200, tastingNotes:["floral","stone fruit"], cuppingScore:89, tried:true, createdAt:now, updatedAt:now },
+          { id:nanoid(), name:"Cerrado Natural", roaster:"Blue Bottle", originCountry:"BRA", originRegion:"Cerrado", process:"Natural", roastLevel:"medium", priceJPY:1500, tastingNotes:["chocolate","nutty"], cuppingScore:84, tried:false, createdAt:now, updatedAt:now },
+          { id:nanoid(), name:"Antigua", roaster:"Nagoya Coffee", originCountry:"GTM", originRegion:"Antigua", process:"Washed", roastLevel:"medium", priceJPY:1700, tastingNotes:["cocoa","spice"], cuppingScore:85, tried:false, createdAt:now, updatedAt:now },
+          { id:nanoid(), name:"Boquete Geisha Natural", roaster:"Specialty JP", originCountry:"PAN", originRegion:"Boquete", variety:["Geisha"], process:"Natural", roastLevel:"light", priceJPY:4500, tastingNotes:["bergamot","tropical"], cuppingScore:92, tried:true, createdAt:now, updatedAt:now },
+        ];
+        const brews = [
+          { id:nanoid(), beanId:seeds[0].id, date:now, method:"V60", doseG:15, waterG:240, ratio:"1:16", tempC:94, timeSec:150, steps:["Bloom 30s","Pour to 240g"], rating:5, notes:"Delicate jasmine." },
+          { id:nanoid(), beanId:seeds[1].id, date:now, method:"FrenchPress", doseG:18, waterG:270, ratio:"1:15", tempC:94, timeSec:240, steps:["4:00 total","Skim crust"], rating:4, notes:"Blackcurrant pop." },
+          { id:nanoid(), beanId:seeds[2].id, date:now, method:"Siphon", doseG:20, waterG:300, ratio:"1:15", tempC:92, timeSec:210, steps:["Assemble","Stir & draw down"], rating:5, notes:"Elegant, tea-like." },
+          { id:nanoid(), beanId:seeds[3].id, date:now, method:"IcedFrenchPress", doseG:18, waterG:180, ratio:"bypass 120g ice", tempC:95, timeSec:150, steps:["Add 120g ice","Steep 2:30","Press"], rating:4, notes:"Chocolate soda." },
+          { id:nanoid(), beanId:seeds[5].id, date:now, method:"Espresso", doseG:18, waterG:36, ratio:"1:2", tempC:94, timeSec:30, steps:["18 in, 36 out"], rating:5, notes:"Perfumed, sweet." },
+          { id:nanoid(), beanId:seeds[5].id, date:now, method:"V60", doseG:15, waterG:240, ratio:"1:16", tempC:93, timeSec:160, steps:["Standard pour"], rating:5, notes:"Tropical fruit." },
+          { id:nanoid(), beanId:seeds[0].id, date:now, method:"Batch", doseG:50, waterG:800, ratio:"1:16", tempC:92, timeSec:240, steps:["Batch brewer"], rating:3, notes:"Softer acidity." },
+          { id:nanoid(), beanId:seeds[4].id, date:now, method:"AeroPress", doseG:16, waterG:220, ratio:"1:13.7", tempC:93, timeSec:120, steps:["Inverted 1:20","Press 20s"], rating:4, notes:"Balanced." },
+        ];
+        set({ beans:seeds, brews });
+        persist();
+      },
+    }));
+
+    // persist store -> localStorage
+    function persist(){
+      const s = useStore.getState();
+      DataService.save({version:1, beans:s.beans, brews:s.brews});
+    }
+    // load existing
+    (function bootstrap(){
+      const db = DataService.load();
+      useStore.setState({ beans: db.beans, brews: db.brews });
+      if(!db.beans.length && !db.brews.length) useStore.getState().seedIfEmpty();
+    })();
+
+    /********************
+     * PDF Doc
+     ********************/
+    const styles = StyleSheet.create({
+      page:{ padding:24, fontSize:12 }, h1:{ fontSize:18, marginBottom:8 }, row:{ marginBottom:8, paddingBottom:6, borderBottom:"1px solid #ddd" }
+    });
+    function BrewsDoc({brews, beans}){
+      const name = id => beans.find(b=>b.id===id)?.name ?? "Unknown";
+      return React.createElement(Document, null,
+        React.createElement(Page, {size:"A4", style:styles.page},
+          React.createElement(Text, {style:styles.h1}, "Brew Journal Export"),
+          brews.map((br,i)=>React.createElement(View,{key:i, style:styles.row},
+            React.createElement(Text,null, `${name(br.beanId)} — ${br.method} — ${br.date}`),
+            React.createElement(Text,null, `Dose ${br.doseG}g, Water ${br.waterG}g, Temp ${br.tempC??"-"}°C, Time ${br.timeSec??"-"}s, Ratio ${br.ratio??"-"}`),
+            React.createElement(Text,null, `Rating: ${br.rating ?? "-"}`),
+            br.notes ? React.createElement(Text,null, `Notes: ${br.notes}`) : null
+          ))
+        )
+      );
+    }
+
+    /********************
+     * Small helpers
+     ********************/
+    const useQuery = ()=> new URLSearchParams(useLocation().search);
+    function download(filename, text){
+      const blob = new Blob([text], {type:"application/json"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url), 500);
+    }
+
+    /********************
+     * Components
+     ********************/
+    function TopNav(){
+      const inputRef = useRef(null);
+      const navigate = useNavigate();
+      useEffect(()=>{
+        const onKey = e => {
+          if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase()==='k'){
+            e.preventDefault(); inputRef.current?.focus();
+          }
+        };
+        window.addEventListener('keydown', onKey);
+        return ()=>window.removeEventListener('keydown', onKey);
+      },[]);
+      return (
+        React.createElement("div",{className:"sticky top-0 z-10 backdrop-blur bg-neutral-950/70 border-b border-neutral-800"},
+          React.createElement("div",{className:"max-w-6xl mx-auto px-4 py-3 flex items-center gap-3"},
+            React.createElement("div",{className:"font-semibold tracking-wide"},"Brew Journal + World Map"),
+            React.createElement("nav",{className:"flex items-center gap-3 text-sm"},
+              React.createElement(NavLink,{to:"/", className:({isActive})=>isActive?'badge':'opacity-70 hover:opacity-100'},"Home"),
+              React.createElement(NavLink,{to:"/beans", className:({isActive})=>isActive?'badge':'opacity-70 hover:opacity-100'},"Beans"),
+              React.createElement(NavLink,{to:"/brews", className:({isActive})=>isActive?'badge':'opacity-70 hover:opacity-100'},"Brews"),
+              React.createElement(NavLink,{to:"/map", className:({isActive})=>isActive?'badge':'opacity-70 hover:opacity-100'},"Map"),
+              React.createElement(NavLink,{to:"/settings", className:({isActive})=>isActive?'badge':'opacity-70 hover:opacity-100'},"Settings"),
+            ),
+            React.createElement("div",{className:"flex-1"}),
+            React.createElement("input",{
+              ref:inputRef, placeholder:"Search (⌘/Ctrl+K)", className:"input max-w-xs",
+              onKeyDown:e=>{ if(e.key==='Enter') navigate('/beans?search='+encodeURIComponent(e.target.value)) }
+            })
+          )
+        )
+      );
+    }
+
+    function Home(){
+      const beans = useStore(s=>s.beans), brews = useStore(s=>s.brews);
+      return (
+        React.createElement("div",{className:"grid md:grid-cols-2 gap-6"},
+          React.createElement("div",{className:"card"},
+            React.createElement("h2",{className:"text-lg font-semibold mb-2"},"Quick Start"),
+            React.createElement("div",{className:"flex gap-2"},
+              React.createElement(Link,{className:"btn", to:"/beans"},"Manage Beans"),
+              React.createElement(Link,{className:"btn", to:"/brews"},"Log Brews"),
+              React.createElement(Link,{className:"btn", to:"/map"},"World Map"),
+            )
+          ),
+          React.createElement("div",{className:"card"},
+            React.createElement("h2",{className:"text-lg font-semibold mb-2"},"This Week"),
+            React.createElement("p",{className:"text-sm text-neutral-300"},"Beans tracked: ",
+              React.createElement("span",{className:"badge"}, beans.length)),
+            React.createElement("p",{className:"text-sm text-neutral-300"},"Brews logged: ",
+              React.createElement("span",{className:"badge"}, brews.length)),
+            React.createElement("div",{className:"mt-4 h-40"},
+              React.createElement(ResponsiveContainer,{width:"100%", height:"100%"},
+                React.createElement(LineChart,{data:brews.map(b=>({date:b.date, rating:b.rating||0}))},
+                  React.createElement(CartesianGrid,{strokeDasharray:"3 3"}),
+                  React.createElement(XAxis,{dataKey:"date", hide:true}),
+                  React.createElement(YAxis,{domain:[0,5]}),
+                  React.createElement(Tooltip,null),
+                  React.createElement(Line,{type:"monotone", dataKey:"rating", stroke:"#60a5fa", dot:false})
+                )
+              )
+            )
+          )
+        )
+      );
+    }
+
+    function BeanForm({defaultValues={}, onSubmit}){
+      const schema = BeanSchema.omit({id:true, createdAt:true, updatedAt:true});
+      const { register, handleSubmit, formState:{errors} } = useForm({
+        resolver: zodResolver(schema),
+        defaultValues: { name:"", originCountry:"ETH", variety:[], tastingNotes:[], tried:false, ...defaultValues }
+      });
+      return (
+        React.createElement("form",{onSubmit:handleSubmit(v=>onSubmit(v)) , className:"space-y-3"},
+          React.createElement("div",null,
+            React.createElement("label",{className:"text-sm"},"Name"),
+            React.createElement("input",{className:"input", ...register('name')}),
+            errors.name && React.createElement("p",{className:"text-red-400 text-xs"}, String(errors.name.message))
+          ),
+          React.createElement("div",null,
+            React.createElement("label",{className:"text-sm"},"Roaster"),
+            React.createElement("input",{className:"input", ...register('roaster')})
+          ),
+          React.createElement("div",{className:"grid grid-cols-2 gap-2"},
+            React.createElement("div",null,
+              React.createElement("label",{className:"text-sm"},"Origin (ISO3)"),
+              React.createElement("input",{className:"input", ...register('originCountry')})
+            ),
+            React.createElement("div",null,
+              React.createElement("label",{className:"text-sm"},"Process"),
+              React.createElement("input",{className:"input", ...register('process')})
+            ),
+          ),
+          React.createElement("div",{className:"grid grid-cols-2 gap-2"},
+            React.createElement("div",null,
+              React.createElement("label",{className:"text-sm"},"Roast Level"),
+              React.createElement("select",{className:"input", ...register('roastLevel')},
+                React.createElement("option",{value:""},"-"),
+                React.createElement("option",{value:"light"},"light"),
+                React.createElement("option",{value:"medium"},"medium"),
+                React.createElement("option",{value:"dark"},"dark"),
+              )
+            ),
+            React.createElement("div",{className:"flex items-center gap-2 mt-7"},
+              React.createElement("input",{type:"checkbox", className:"w-4 h-4", ...register('tried')}),
+              React.createElement("span",{className:"text-sm"},"Tried")
+            )
+          ),
+          React.createElement("div",{className:"grid grid-cols-2 gap-2"},
+            React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Roast Date"),
+              React.createElement("input",{type:"date", className:"input", ...register('roastDate')})),
+            React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Purchase Date"),
+              React.createElement("input",{type:"date", className:"input", ...register('purchaseDate')})),
+          ),
+          React.createElement("div",null,
+            React.createElement("label",{className:"text-sm"},"Tasting Notes (comma-separated)"),
+            React.createElement("input",{className:"input", ...register('tastingNotes',{setValueAs:v=>(typeof v==='string'?v.split(',').map(x=>x.trim()).filter(Boolean):v)})})
+          ),
+          React.createElement("button",{className:"btn", type:"submit"},"Save Bean")
+        )
+      );
+    }
+
+    function BeansPage(){
+      const q = useQuery().get('search')?.toLowerCase() ?? "";
+      const beans = useStore(s=>s.beans);
+      const addBean = useStore(s=>s.addBean);
+      const updateBean = useStore(s=>s.updateBean);
+      const deleteBean = useStore(s=>s.deleteBean);
+      const exportJSON = useStore(s=>s.exportJSON);
+      const importJSON = useStore(s=>s.importJSON);
+      const [showForm,setShowForm] = useState(false);
+
+      const [filters,setFilters]=useState({origin:"", process:"", roastLevel:"", tried:""});
+      const filtered = beans
+        .filter(b=>b.name.toLowerCase().includes(q) || (b.roaster||"").toLowerCase().includes(q) || (b.originCountry||"").toLowerCase().includes(q))
+        .filter(b=>!filters.origin || b.originCountry===filters.origin)
+        .filter(b=>!filters.process || b.process===filters.process)
+        .filter(b=>!filters.roastLevel || b.roastLevel===filters.roastLevel)
+        .filter(b=>!filters.tried || String(b.tried)===filters.tried);
+
+      function handleExport(){ download("brew-journal.json", exportJSON()); }
+      function handleImport(e){
+        const file = e.target.files?.[0]; if(!file) return;
+        const reader = new FileReader();
+        reader.onload = ()=>{ try{ importJSON(JSON.parse(String(reader.result))); alert("Import complete"); } catch{ alert("Invalid JSON"); } };
+        reader.readAsText(file);
+      }
+
+      return (
+        React.createElement("div",{className:"space-y-4"},
+          React.createElement("div",{className:"flex items-center justify-between"},
+            React.createElement("h1",{className:"text-xl font-semibold"},"Beans"),
+            React.createElement("div",{className:"flex items-center gap-2"},
+              React.createElement("select",{className:"input w-28", value:filters.origin, onChange:e=>setFilters(f=>({...f,origin:e.target.value}))},
+                React.createElement("option",{value:""},"Origin"),
+                [...new Set(beans.map(b=>b.originCountry))].map(x=>React.createElement("option",{key:x, value:x},x))
+              ),
+              React.createElement("select",{className:"input w-32", value:filters.process, onChange:e=>setFilters(f=>({...f,process:e.target.value}))},
+                React.createElement("option",{value:""},"Process"),
+                [...new Set(beans.map(b=>b.process).filter(Boolean))].map(x=>React.createElement("option",{key:x, value:x},x))
+              ),
+              React.createElement("select",{className:"input w-32", value:filters.roastLevel, onChange:e=>setFilters(f=>({...f,roastLevel:e.target.value}))},
+                React.createElement("option",{value:""},"Roast"),
+                ["light","medium","dark"].map(x=>React.createElement("option",{key:x, value:x},x))
+              ),
+              React.createElement("select",{className:"input w-24", value:filters.tried, onChange:e=>setFilters(f=>({...f,tried:e.target.value}))},
+                React.createElement("option",{value:""},"Tried?"),
+                React.createElement("option",{value:"true"},"Yes"),
+                React.createElement("option",{value:"false"},"No"),
+              ),
+              React.createElement("label",{className:"btn cursor-pointer"},"Import JSON",
+                React.createElement("input",{type:"file", accept:"application/json", className:"hidden", onChange:handleImport})
+              ),
+              React.createElement("button",{className:"btn", onClick:handleExport},"Export JSON"),
+              React.createElement("button",{className:"btn", onClick:()=>setShowForm(v=>!v)},"+ Add New Bean")
+            )
+          ),
+          showForm && React.createElement("div",{className:"card"},
+            React.createElement(BeanForm,{onSubmit:b=>{ addBean(b); setShowForm(false); }})
+          ),
+          React.createElement("div",{className:"grid gap-2"},
+            React.createElement("div",{className:"grid grid-cols-7 text-xs text-neutral-400 px-2"},
+              React.createElement("div",null,"Name"),
+              React.createElement("div",null,"Roaster"),
+              React.createElement("div",null,"Origin"),
+              React.createElement("div",null,"Process"),
+              React.createElement("div",null,"Roast"),
+              React.createElement("div",null,"Tried"),
+              React.createElement("div",null,"Actions"),
+            ),
+            filtered.map(b=>
+              React.createElement("div",{key:b.id, className:"grid grid-cols-7 items-center bg-neutral-900/60 border border-neutral-800 rounded-xl px-2 py-2"},
+                React.createElement("div",{className:"truncate"},
+                  React.createElement(Link,{className:"link", to:"/beans/"+b.id}, b.name)
+                ),
+                React.createElement("div",{className:"truncate"}, b.roaster ?? "—"),
+                React.createElement("div",null, b.originCountry),
+                React.createElement("div",null, b.process ?? "—"),
+                React.createElement("div",null, b.roastLevel ?? "—"),
+                React.createElement("div",null,
+                  React.createElement("input",{type:"checkbox", checked:b.tried, onChange:e=>updateBean(b.id,{tried:e.target.checked})})
+                ),
+                React.createElement("div",{className:"flex gap-2 justify-end"},
+                  React.createElement(Link,{className:"btn", to:"/beans/"+b.id},"Open"),
+                  React.createElement("button",{className:"btn", onClick:()=>{ if(confirm("Delete bean?")) deleteBean(b.id); }},"Delete")
+                )
+              )
+            )
+          )
+        )
+      );
+    }
+
+    function BrewForm({defaultValues={}, onSubmit}){
+      const schema = BrewSchema.omit({id:true});
+      const { register, handleSubmit } = useForm({
+        resolver: zodResolver(schema),
+        defaultValues: { date:new Date().toISOString().slice(0,10), method:"V60", doseG:15, waterG:240, steps:["Bloom 30s","Pour to 240g"], ...defaultValues }
+      });
+      return (
+        React.createElement("form",{onSubmit:handleSubmit(v=>onSubmit(v)), className:"space-y-3"},
+          React.createElement("div",{className:"grid grid-cols-2 gap-2"},
+            React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Date"), React.createElement("input",{type:"date", className:"input", ...register('date')})),
+            React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Method"),
+              React.createElement("select",{className:"input", ...register('method')},
+                ["V60","AeroPress","FrenchPress","Siphon","Espresso","Batch","IcedFrenchPress"].map(m=>React.createElement("option",{key:m},m))
+              )
+            )
+          ),
+          React.createElement("div",{className:"grid grid-cols-3 gap-2"},
+            React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Dose (g)"), React.createElement("input",{type:"number", step:"1", className:"input", ...register('doseG',{valueAsNumber:true})})),
+            React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Water (g)"), React.createElement("input",{type:"number", step:"1", className:"input", ...register('waterG',{valueAsNumber:true})})),
+            React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Ratio"), React.createElement("input",{className:"input", placeholder:"1:16 or notes", ...register('ratio')})),
+          ),
+          React.createElement("div",{className:"grid grid-cols-2 gap-2"},
+            React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Temp (°C)"), React.createElement("input",{type:"number", step:"1", className:"input", ...register('tempC',{valueAsNumber:true})})),
+            React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Time (sec)"), React.createElement("input",{type:"number", step:"1", className:"input", ...register('timeSec',{valueAsNumber:true})})),
+          ),
+          React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Steps (comma-separated)"),
+            React.createElement("input",{className:"input", ...register('steps',{setValueAs:v=>(typeof v==='string'?v.split(',').map(x=>x.trim()).filter(Boolean):v)})})
+          ),
+          React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Notes"), React.createElement("textarea",{rows:3, className:"input", ...register('notes')})),
+          React.createElement("button",{className:"btn", type:"submit"},"Save Brew")
+        )
+      );
+    }
+
+    function BeanDetail(){
+      const {id} = useParams();
+      const bean = useStore(s=>s.beans.find(b=>b.id===id));
+      const brews = useStore(s=>s.brews.filter(b=>b.beanId===id));
+      const addBrew = useStore(s=>s.addBrew);
+      const updateBean = useStore(s=>s.updateBean);
+      const deleteBean = useStore(s=>s.deleteBean);
+      const [open,setOpen] = useState(false);
+      if(!bean) return React.createElement("div",{className:"card"},"Bean not found. ", React.createElement(Link,{className:"link", to:"/beans"},"Back"));
+      return (
+        React.createElement("div",{className:"space-y-4"},
+          React.createElement("div",{className:"flex items-center justify-between"},
+            React.createElement("h1",{className:"text-xl font-semibold"}, bean.name),
+            React.createElement("div",{className:"flex gap-2"},
+              React.createElement("button",{className:"btn", onClick:()=>setOpen(v=>!v)},"Make New Brew"),
+              React.createElement("button",{className:"btn", onClick:()=>{ if(confirm("Delete bean?")){ deleteBean(bean.id); location.hash="#/beans"; }}},"Delete Bean")
+            )
+          ),
+          React.createElement("div",{className:"grid md:grid-cols-2 gap-4"},
+            React.createElement("div",{className:"card space-y-1"},
+              React.createElement("div",{className:"text-sm text-neutral-300"},"Origin: ", bean.originRegion?bean.originRegion+", ":"", bean.originCountry),
+              React.createElement("div",{className:"text-sm text-neutral-300"},"Process: ", bean.process ?? "—"),
+              React.createElement("div",{className:"text-sm text-neutral-300"},"Tasting: ", (bean.tastingNotes||[]).join(', ') || "—"),
+              React.createElement("label",{className:"flex items-center gap-2 text-sm mt-2"},
+                React.createElement("input",{type:"checkbox", checked:bean.tried, onChange:e=>updateBean(bean.id,{tried:e.target.checked})}),
+                "Tried"
+              )
+            ),
+            React.createElement("div",{className:"card"},
+              React.createElement("h3",{className:"font-medium mb-2"},"Brews"),
+              React.createElement("div",{className:"space-y-2"},
+                brews.map(br=>React.createElement("div",{key:br.id, className:"bg-neutral-900/60 border border-neutral-800 rounded-xl px-3 py-2"},
+                  React.createElement("div",{className:"text-sm"}, `${br.date} — ${br.method} — ${br.doseG}g → ${br.waterG}g`),
+                  React.createElement("div",{className:"text-xs text-neutral-400"}, br.notes ?? "—")
+                )),
+                brews.length===0 && React.createElement("div",{className:"text-sm text-neutral-400"},"No brews yet.")
+              ),
+              React.createElement("div",{className:"mt-2 h-40"},
+                React.createElement(ResponsiveContainer,{width:"100%", height:"100%"},
+                  React.createElement(LineChart,{data:brews.map(x=>({x:x.date, y:x.rating||0}))},
+                    React.createElement(XAxis,{dataKey:"x", hide:true}),
+                    React.createElement(YAxis,{domain:[0,5]}),
+                    React.createElement(Tooltip,null),
+                    React.createElement(Line,{type:"monotone", dataKey:"y", stroke:"#34d399", dot:false})
+                  )
+                )
+              )
+            )
+          ),
+          open && React.createElement("div",{className:"card"},
+            React.createElement(BrewForm,{defaultValues:{beanId:bean.id}, onSubmit:b=>{ addBrew({...b, beanId:bean.id}); setOpen(false); alert("Brew saved"); }})
+          )
+        )
+      );
+    }
+
+    function BrewsPage(){
+      const brews = useStore(s=>s.brews);
+      const beans = useStore(s=>s.beans);
+      const [selected, setSelected] = useState([]);
+      const chosen = brews.filter(b=>selected.includes(b.id));
+      const toggle = id => setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+      return (
+        React.createElement("div",{className:"space-y-4"},
+          React.createElement("div",{className:"flex items-center justify-between"},
+            React.createElement("h1",{className:"text-xl font-semibold"},"Brews"),
+            React.createElement("div",{className:"flex gap-2"},
+              chosen.length>0 && React.createElement(PDFDownloadLink,{
+                document: React.createElement(BrewsDoc,{brews:chosen, beans}),
+                fileName:"brews.pdf",
+                className:"btn"
+              }, ({loading})=>loading?"Preparing PDF…":"Download PDF")
+            )
+          ),
+          React.createElement("div",{className:"space-y-2"},
+            brews.map(b=>
+              React.createElement("label",{key:b.id, className:"grid grid-cols-6 items-center bg-neutral-900/60 border border-neutral-800 rounded-xl px-2 py-2"},
+                React.createElement("input",{type:"checkbox", checked:selected.includes(b.id), onChange:()=>toggle(b.id)}),
+                React.createElement("div",{className:"col-span-2"}, beans.find(x=>x.id===b.beanId)?.name ?? "Unknown"),
+                React.createElement("div",null, b.method),
+                React.createElement("div",null, b.date),
+                React.createElement("div",{className:"text-sm text-neutral-400"}, b.notes ?? "—")
+              )
+            )
+          )
+        )
+      );
+    }
+
+    function WorldMap({ onSelect }){
+      const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+      const beans = useStore(s=>s.beans);
+      const triedCounts = useMemo(()=>{
+        const m = {}; for(const b of beans){ if(b.tried) m[b.originCountry]=(m[b.originCountry]||0)+1; }
+        return m;
+      },[beans]);
+      const values = Object.values(triedCounts); const max = values.length?Math.max(...values):1;
+      const [hover,setHover]=useState(null);
+      const colorFor = (value,max)=> value===0? "#1f2937" : `rgb(${Math.floor(200+55*(value/max))},120,40)`;
+      return (
+        React.createElement("div",{className:"w-full h-[480px] relative"},
+          React.createElement(ComposableMap,{projectionConfig:{scale:150}},
+            React.createElement(Geographies,{geography:GEO_URL}, ({geographies}) =>
+              geographies.map(geo=>{
+                const iso3 = geo.properties.iso_a3;
+                const count = triedCounts[iso3] || 0;
+                return React.createElement(Geography,{
+                  key:geo.rsmKey, geography:geo,
+                  onMouseEnter:()=>setHover({name:geo.properties.name, count}),
+                  onMouseLeave:()=>setHover(null),
+                  onClick:()=>onSelect(iso3),
+                  style:{
+                    default:{ fill:colorFor(count,max), outline:"none" },
+                    hover:{ fill:"#f59e0b", outline:"none" },
+                    pressed:{ fill:"#f59e0b", outline:"none" }
+                  }
+                });
+              })
+            )
+          ),
+          hover && React.createElement("div",{className:"absolute left-2 bottom-2 p-2 bg-neutral-800 border border-neutral-700 rounded-lg text-sm"},
+            `${hover.name}: ${hover.count} bean${hover.count===1?"":"s"} tried`
+          )
+        )
+      );
+    }
+
+    function CountryDrawer({iso3, onClose}){
+      const beans = useStore(s=>s.beans);
+      const addBean = useStore(s=>s.addBean);
+      if(!iso3) return null;
+      const list = beans.filter(b=>b.originCountry===iso3 && b.tried);
+      return (
+        React.createElement("div",{className:"fixed right-0 top-0 h-full w-full sm:w-[420px] bg-neutral-950 border-l border-neutral-800 p-4 overflow-y-auto z-20"},
+          React.createElement("div",{className:"flex items-center justify-between"},
+            React.createElement("h3",{className:"text-lg font-semibold"}, `${nameFromISO3(iso3)} — Tried Beans`),
+            React.createElement("button",{className:"btn", onClick:onClose},"Close")
+          ),
+          React.createElement("div",{className:"mt-3 space-y-2"},
+            list.length===0 && React.createElement("p",{className:"text-sm text-neutral-400"},"No tried beans yet."),
+            list.map(b=>React.createElement("div",{className:"card", key:b.id},
+              React.createElement("div",{className:"font-medium"}, b.name),
+              React.createElement("div",{className:"text-sm text-neutral-400"}, `${b.roaster ?? "—"} · ${b.process ?? "—"}`),
+              React.createElement("div",{className:"mt-2"},
+                React.createElement(Link,{className:"btn", to:"/beans/"+b.id, onClick:onClose},"View Bean")
+              )
+            ))
+          ),
+          React.createElement("div",{className:"mt-4"},
+            React.createElement("button",{className:"btn", onClick:()=>{
+              const bean = addBean({
+                name:"New Bean", roaster:"", originCountry:iso3, originRegion:"", farm:"",
+                variety:[], process:"", altitudeM:undefined, roastLevel:undefined, roastDate:undefined, purchaseDate:undefined,
+                priceJPY:undefined, tastingNotes:[], cuppingScore:undefined, labelPhoto:undefined, tried:true
+              });
+              onClose(); location.hash = "#/beans/"+bean.id;
+            }},"Add Bean (prefilled)")
+          )
+        )
+      );
+    }
+
+    function MapPage(){
+      const beans = useStore(s=>s.beans);
+      const [country,setCountry] = useState(null);
+      const stats = useMemo(()=>{
+        const tried = beans.filter(b=>b.tried);
+        const by = {};
+        for(const b of tried){
+          by[b.originCountry] = by[b.originCountry] || {count:0,sum:0,n:0};
+          by[b.originCountry].count++;
+          if(b.cuppingScore){ by[b.originCountry].sum += b.cuppingScore; by[b.originCountry].n++; }
+        }
+        const entries = Object.entries(by);
+        const total = entries.length;
+        const top = entries.sort((a,b)=>b[1].count-a[1].count)[0]?.[0] ?? "—";
+        const hi  = entries.map(([k,v])=>[k, v.n?Math.round(v.sum/v.n):0]).sort((a,b)=>b[1]-a[1])[0];
+        return { total, top, hi };
+      },[beans]);
+      return (
+        React.createElement("div",{className:"space-y-4"},
+          React.createElement("h1",{className:"text-xl font-semibold"},"World Map"),
+          React.createElement("div",{className:"flex gap-2 text-sm"},
+            React.createElement("span",{className:"badge"},"Countries Tried: ", stats.total),
+            React.createElement("span",{className:"badge"},"Top Origin: ", stats.top),
+            React.createElement("span",{className:"badge"},"Highest Avg Score: ", stats.hi?`${stats.hi[0]} (${stats.hi[1]})`:"—"),
+          ),
+          React.createElement("div",{className:"card"}, React.createElement(WorldMap,{onSelect:setCountry})),
+          React.createElement(CountryDrawer,{iso3:country, onClose:()=>setCountry(null)})
+        )
+      );
+    }
+
+    function SettingsPage(){
+      const exportJSON = useStore(s=>s.exportJSON);
+      const importJSON = useStore(s=>s.importJSON);
+      function handleExport(){ download("brew-journal.json", exportJSON()); }
+      function handleImport(e){
+        const file = e.target.files?.[0]; if(!file) return;
+        const reader = new FileReader();
+        reader.onload = ()=>{ try{ importJSON(JSON.parse(String(reader.result))); alert("Import complete"); } catch{ alert("Invalid JSON"); } };
+        reader.readAsText(file);
+      }
+      return (
+        React.createElement("div",{className:"space-y-4"},
+          React.createElement("h1",{className:"text-xl font-semibold"},"Settings"),
+          React.createElement("div",{className:"card space-y-3"},
+            React.createElement("div",{className:"flex gap-2"},
+              React.createElement("label",{className:"btn cursor-pointer"},"Import JSON",
+                React.createElement("input",{type:"file", accept:"application/json", className:"hidden", onChange:handleImport})
+              ),
+              React.createElement("button",{className:"btn", onClick:handleExport},"Export JSON")
+            ),
+            React.createElement("button",{className:"btn", onClick:()=>{ if(confirm("Reset all data?")){ DataService.reset(); location.reload(); }}},
+              "Reset Data"
+            ),
+            React.createElement("p",{className:"text-xs text-neutral-400"},"Data is stored locally in your browser (offline). Export regularly for backup.")
+          )
+        )
+      );
+    }
+
+    /********************
+     * App + Router
+     ********************/
+    function App(){
+      return (
+        React.createElement("div",{className:"min-h-screen"},
+          React.createElement(TopNav,null),
+          React.createElement("div",{className:"max-w-6xl mx-auto p-4"},
+            React.createElement(Routes,null,
+              React.createElement(Route,{path:"/", element:React.createElement(Home,null)}),
+              React.createElement(Route,{path:"/beans", element:React.createElement(BeansPage,null)}),
+              React.createElement(Route,{path:"/beans/:id", element:React.createElement(BeanDetail,null)}),
+              React.createElement(Route,{path:"/brews", element:React.createElement(BrewsPage,null)}),
+              React.createElement(Route,{path:"/map", element:React.createElement(MapPage,null)}),
+              React.createElement(Route,{path:"/settings", element:React.createElement(SettingsPage,null)}),
+            )
+          )
+        )
+      );
+    }
+
+    /********************
+     * Self-check (non-blocking)
+     ********************/
+    async function selfCheck(){
+      try{
+        // create bean + brew
+        const b = useStore.getState().addBean({
+          name:"_selfcheck", roaster:"test", originCountry:"USA", process:"Washed", roastLevel:"light", tried:true
+        });
+        useStore.getState().addBrew({
+          beanId:b.id, date:new Date().toISOString().slice(0,10), method:"V60", doseG:15, waterG:240, steps:["Bloom"], rating:5
+        });
+        // pdf render
+        const beans = useStore.getState().beans;
+        const brews = useStore.getState().brews.slice(0,2);
+        const instance = createPdf(React.createElement(BrewsDoc,{brews, beans}));
+        await instance.toBlob();
+        // aggregation check
+        const triedCounts = {}; for(const x of beans){ if(x.tried) triedCounts[x.originCountry]=(triedCounts[x.originCountry]||0)+1; }
+        if(Object.keys(triedCounts).length===0) throw new Error("Map aggregation empty");
+        console.info("Self-check passed");
+        // clean up the temp bean/brew
+        useStore.getState().deleteBean(b.id);
+      }catch(err){
+        console.warn("Self-check failed", err);
+        const banner = document.createElement("div");
+        banner.className = "fixed bottom-3 left-3 right-3 sm:right-auto sm:w-[520px] bg-amber-700/90 border border-amber-500 text-white rounded-xl px-4 py-3 z-50";
+        banner.innerHTML = "<b>Setup warning:</b> Some features didn’t initialize. Try reloading; if on strict CSP host, move to Vercel/Netlify. See console for details.";
+        document.body.appendChild(banner);
+        setTimeout(()=>banner.remove(), 10000);
+      }
+    }
+
+    /********************
+     * Mount
+     ********************/
+    const root = createRoot(document.getElementById("root"));
+    root.render(
+      React.createElement(React.StrictMode,null,
+        React.createElement(HashRouter,null, React.createElement(App,null))
+      )
+    );
+    selfCheck();
+  </script>
+</body>
+</html>
