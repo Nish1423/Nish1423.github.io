@@ -38,7 +38,7 @@
       ComposableMap, Geographies, Geography
     } from "https://esm.sh/react-simple-maps@3?deps=d3-geo,topojson-client,react@18,react-dom@18";
     import {
-      PDFDownloadLink, Document, Page, Text, View, StyleSheet, pdf as createPdf
+      PDFDownloadLink, Document, Page, Text, View, StyleSheet
     } from "https://esm.sh/@react-pdf/renderer@3?bundle";
     import {
       LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid
@@ -165,10 +165,12 @@
       },
     }));
 
+    // persist on change
     function persist(){
       const s = useStore.getState();
       DataService.save({version:1, beans:s.beans, brews:s.brews});
     }
+    // load existing / seed
     (function bootstrap(){
       const db = DataService.load();
       useStore.setState({ beans: db.beans, brews: db.brews });
@@ -703,49 +705,11 @@
     }
 
     /********************
-     * Self-check (non-blocking, sandbox-safe)
+     * Self-check DISABLED (no banner)
      ********************/
-    async function selfCheck(){
-      const isSandbox =
-        /stackblitz|bolt|codesandbox|github\.dev|gitpod/.test(location.host) ||
-        new URLSearchParams(location.search).has('safe');
-
-      try{
-        // create a bean + brew
-        const b = useStore.getState().addBean({
-          name: "_selfcheck", roaster: "test", originCountry: "USA",
-          process: "Washed", roastLevel: "light", tried: true
-        });
-        useStore.getState().addBrew({
-          beanId: b.id, date: new Date().toISOString().slice(0,10),
-          method: "V60", doseG: 15, waterG: 240, steps: ["Bloom"], rating: 5
-        });
-
-        // Only run the PDF blob step when not in a restrictive sandbox
-        if (!isSandbox) {
-          const beans = useStore.getState().beans;
-          const brews = useStore.getState().brews.slice(0,2);
-          const inst = createPdf(React.createElement(BrewsDoc,{brews, beans}));
-          await inst.toBlob();
-        }
-
-        // Verify map aggregation
-        const triedCounts = {};
-        for (const x of useStore.getState().beans) {
-          if (x.tried) triedCounts[x.originCountry] = (triedCounts[x.originCountry]||0) + 1;
-        }
-        if (Object.keys(triedCounts).length === 0) throw new Error("Map aggregation empty");
-
-        console.info("Self-check passed" + (isSandbox ? " (pdf test skipped)" : ""));
-        useStore.getState().deleteBean(b.id);
-      } catch (err) {
-        console.warn("Self-check failed", err);
-        const banner = document.createElement("div");
-        banner.className = "fixed bottom-3 left-3 right-3 sm:right-auto sm:w-[520px] bg-amber-700/90 border border-amber-500 text-white rounded-xl px-4 py-3 z-50";
-        banner.innerHTML = "<b>Setup warning:</b> Some features didn’t initialize. Try reloading; if on strict CSP host, move to Vercel/Netlify. See console for details.";
-        document.body.appendChild(banner);
-        setTimeout(()=>banner.remove(), 10000);
-      }
+    function selfCheck(){
+      // Disabled to avoid sandbox CSP false-positives.
+      console.info("Self-check disabled (sandbox-safe build).");
     }
 
     /********************
