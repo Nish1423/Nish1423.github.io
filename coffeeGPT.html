@@ -8,12 +8,13 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     :root { --bg:#0b0f19; --fg:#e5e7eb; }
-    body{ background:var(--bg); color:var(--fg); }
-    .btn{ @apply inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-sm; }
-    .input{ @apply bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 w-full; }
-    .card{ @apply bg-neutral-900/70 border border-neutral-800 rounded-2xl p-4 shadow; }
-    .badge{ @apply text-xs rounded-full px-2 py-1 bg-neutral-800 border border-neutral-700; }
-    .link{ color:#93c5fd; }
+    body{ background:var(--bg); color:var(--fg); font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial }
+    .btn{ display:inline-flex; align-items:center; gap:.5rem; padding:.5rem .75rem; border-radius:.75rem; background:#262626; color:#e5e7eb; font-size:.875rem }
+    .btn:hover{ background:#3f3f46 }
+    .input{ background:#0a0a0a; border:1px solid #3f3f46; border-radius:.5rem; padding:.5rem .75rem; width:100%; color:#e5e7eb }
+    .card{ background:rgba(23,23,23,.7); border:1px solid #262626; border-radius:1rem; padding:1rem; box-shadow:0 1px 3px rgba(0,0,0,.2) }
+    .badge{ font-size:.75rem; border-radius:9999px; padding:.25rem .5rem; background:#262626; border:1px solid #3f3f46 }
+    .link{ color:#93c5fd }
   </style>
 </head>
 <body>
@@ -103,20 +104,14 @@
           const raw = localStorage.getItem(STORAGE_KEY);
           if(!raw) return structuredClone(defaultDB);
           const db = JSON.parse(raw);
-          // migrations (future-ready)
           if(!db.version) db.version = 1;
           if(!Array.isArray(db.beans)) db.beans = [];
           if(!Array.isArray(db.brews)) db.brews = [];
           return db;
         }catch(e){ console.warn("load error", e); return structuredClone(defaultDB); }
       },
-      save(db){
-        try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }
-        catch(e){ console.warn("save error", e); }
-      },
-      export(db){
-        return JSON.stringify(db, null, 2);
-      },
+      save(db){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }catch(e){ console.warn("save error", e); } },
+      export(db){ return JSON.stringify(db, null, 2); },
       import(json){
         try{
           const db = JSON.parse(json);
@@ -148,7 +143,7 @@
         const s = get(); if(s.beans.length || s.brews.length) return;
         const now = new Date().toISOString();
         const seeds = [
-          { id:nanoid(), name:"Yirgacheffe Washed", roaster:"Tokyo Roasters", originCountry:"ETH", originRegion:"Yirgacheffe", farm:"Various", variety:["Heirloom"], process:"Washed", altitudeM:2000, roastLevel:"light", roastDate:now, purchaseDate:now, priceJPY:1800, tastingNotes:["jasmine","citrus"], cuppingScore:88, labelPhoto:undefined, tried:true, createdAt:now, updatedAt:now },
+          { id:nanoid(), name:"Yirgacheffe Washed", roaster:"Tokyo Roasters", originCountry:"ETH", originRegion:"Yirgacheffe", farm:"Various", variety:["Heirloom"], process:"Washed", altitudeM:2000, roastLevel:"light", roastDate:now, purchaseDate:now, priceJPY:1800, tastingNotes:["jasmine","citrus"], cuppingScore:88, tried:true, createdAt:now, updatedAt:now },
           { id:nanoid(), name:"Nyeri AA", roaster:"Osaka Beans", originCountry:"KEN", originRegion:"Nyeri", variety:["SL28","SL34"], process:"Washed", roastLevel:"light", roastDate:now, purchaseDate:now, priceJPY:2000, tastingNotes:["blackcurrant","grapefruit"], cuppingScore:90, tried:true, createdAt:now, updatedAt:now },
           { id:nanoid(), name:"Huila Pink Bourbon", roaster:"Kanto Coffee", originCountry:"COL", originRegion:"Huila", variety:["Pink Bourbon"], process:"Washed", roastLevel:"light", roastDate:now, purchaseDate:now, priceJPY:2200, tastingNotes:["floral","stone fruit"], cuppingScore:89, tried:true, createdAt:now, updatedAt:now },
           { id:nanoid(), name:"Cerrado Natural", roaster:"Blue Bottle", originCountry:"BRA", originRegion:"Cerrado", process:"Natural", roastLevel:"medium", priceJPY:1500, tastingNotes:["chocolate","nutty"], cuppingScore:84, tried:false, createdAt:now, updatedAt:now },
@@ -170,12 +165,10 @@
       },
     }));
 
-    // persist store -> localStorage
     function persist(){
       const s = useStore.getState();
       DataService.save({version:1, beans:s.beans, brews:s.brews});
     }
-    // load existing
     (function bootstrap(){
       const db = DataService.load();
       useStore.setState({ beans: db.beans, brews: db.brews });
@@ -204,7 +197,7 @@
     }
 
     /********************
-     * Small helpers
+     * Helpers
      ********************/
     const useQuery = ()=> new URLSearchParams(useLocation().search);
     function download(filename, text){
@@ -458,7 +451,7 @@
             React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Time (sec)"), React.createElement("input",{type:"number", step:"1", className:"input", ...register('timeSec',{valueAsNumber:true})})),
           ),
           React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Steps (comma-separated)"),
-            React.createElement("input",{className:"input", ...register('steps',{setValueAs:v=>(typeof v==='string'?v.split(',').map(x=>x.trim()).filter(Boolean):v)})})
+            React.createElement("input",{className:"input", ...register('steps',{ setValueAs:v=>(typeof v==='string'? v.split(',').map(x=>x.trim()).filter(Boolean):v) })})
           ),
           React.createElement("div",null, React.createElement("label",{className:"text-sm"},"Notes"), React.createElement("textarea",{rows:3, className:"input", ...register('notes')})),
           React.createElement("button",{className:"btn", type:"submit"},"Save Brew")
@@ -710,29 +703,42 @@
     }
 
     /********************
-     * Self-check (non-blocking)
+     * Self-check (non-blocking, sandbox-safe)
      ********************/
     async function selfCheck(){
+      const isSandbox =
+        /stackblitz|bolt|codesandbox|github\.dev|gitpod/.test(location.host) ||
+        new URLSearchParams(location.search).has('safe');
+
       try{
-        // create bean + brew
+        // create a bean + brew
         const b = useStore.getState().addBean({
-          name:"_selfcheck", roaster:"test", originCountry:"USA", process:"Washed", roastLevel:"light", tried:true
+          name: "_selfcheck", roaster: "test", originCountry: "USA",
+          process: "Washed", roastLevel: "light", tried: true
         });
         useStore.getState().addBrew({
-          beanId:b.id, date:new Date().toISOString().slice(0,10), method:"V60", doseG:15, waterG:240, steps:["Bloom"], rating:5
+          beanId: b.id, date: new Date().toISOString().slice(0,10),
+          method: "V60", doseG: 15, waterG: 240, steps: ["Bloom"], rating: 5
         });
-        // pdf render
-        const beans = useStore.getState().beans;
-        const brews = useStore.getState().brews.slice(0,2);
-        const instance = createPdf(React.createElement(BrewsDoc,{brews, beans}));
-        await instance.toBlob();
-        // aggregation check
-        const triedCounts = {}; for(const x of beans){ if(x.tried) triedCounts[x.originCountry]=(triedCounts[x.originCountry]||0)+1; }
-        if(Object.keys(triedCounts).length===0) throw new Error("Map aggregation empty");
-        console.info("Self-check passed");
-        // clean up the temp bean/brew
+
+        // Only run the PDF blob step when not in a restrictive sandbox
+        if (!isSandbox) {
+          const beans = useStore.getState().beans;
+          const brews = useStore.getState().brews.slice(0,2);
+          const inst = createPdf(React.createElement(BrewsDoc,{brews, beans}));
+          await inst.toBlob();
+        }
+
+        // Verify map aggregation
+        const triedCounts = {};
+        for (const x of useStore.getState().beans) {
+          if (x.tried) triedCounts[x.originCountry] = (triedCounts[x.originCountry]||0) + 1;
+        }
+        if (Object.keys(triedCounts).length === 0) throw new Error("Map aggregation empty");
+
+        console.info("Self-check passed" + (isSandbox ? " (pdf test skipped)" : ""));
         useStore.getState().deleteBean(b.id);
-      }catch(err){
+      } catch (err) {
         console.warn("Self-check failed", err);
         const banner = document.createElement("div");
         banner.className = "fixed bottom-3 left-3 right-3 sm:right-auto sm:w-[520px] bg-amber-700/90 border border-amber-500 text-white rounded-xl px-4 py-3 z-50";
