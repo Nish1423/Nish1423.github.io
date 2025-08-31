@@ -1,0 +1,6 @@
+import { useState } from 'react'
+import { useStore } from '../store/store'
+import PDFExportDialog from '../components/pdf/PDFExportDialog'
+export default function Brews(){ const brews=useStore(s=>s.brews); const beans=useStore(s=>s.beans); const [selected,setSelected]=useState<string[]>([]); const chosen=brews.filter(b=>selected.includes(b.id))
+  function toggle(id:string){ setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]) }
+  return (<div className="space-y-4"><div className="flex items-center justify-between"><h1 className="text-xl font-semibold">Brews</h1><div className="flex gap-2">{chosen.length>0&&<PDFExportDialog brews={chosen} beans={beans}/>}</div></div><div className="space-y-2">{brews.map(b=>(<label key={b.id} className="grid grid-cols-6 items-center bg-neutral-900/60 border border-neutral-800 rounded-xl px-2 py-2"><input type="checkbox" checked={selected.includes(b.id)} onChange={()=>toggle(b.id)} /><div className="col-span-2">{beans.find(x=>x.id===b.beanId)?.name ?? 'Unknown'}</div><div>{b.method}</div><div>{b.date}</div><div className="text-sm text-neutral-400">{b.notes ?? '—'}</div></label>))}</div></div>) }

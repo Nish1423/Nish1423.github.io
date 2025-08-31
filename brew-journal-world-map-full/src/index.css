@@ -1,0 +1,7 @@
+@tailwind base;@tailwind components;@tailwind utilities;
+:root{--bg:#0b0f19;--fg:#e5e7eb}
+body{background:var(--bg);color:var(--fg);font-family:ui-sans-serif,system-ui}
+.btn{ @apply inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-sm; }
+.input{ @apply bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 w-full; }
+.card{ @apply bg-neutral-900/70 border border-neutral-800 rounded-2xl p-4 shadow; }
+.badge{ @apply text-xs rounded-full px-2 py-1 bg-neutral-800 border border-neutral-700; }
