@@ -1,0 +1,4 @@
+const KEY='bjwm_v1'; const def={version:1,beans:[],brews:[]}
+export function loadDB(){ if(typeof window==='undefined')return structuredClone(def); try{const raw=localStorage.getItem(KEY); if(!raw)return structuredClone(def); const p=JSON.parse(raw); if(!p.version)p.version=1; if(!Array.isArray(p.beans))p.beans=[]; if(!Array.isArray(p.brews))p.brews=[]; return p }catch{ return structuredClone(def) } }
+export function saveDB(db:any){ if(typeof window==='undefined')return; try{ localStorage.setItem(KEY, JSON.stringify(db)) }catch{} }
+export function wipeDB(){ if(typeof window==='undefined')return; localStorage.removeItem(KEY) }
